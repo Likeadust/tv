@@ -1,0 +1,107 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'yarn'
+        
+    - name: Setup Java JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'adopt'
+        java-version: '17'
+        
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+      
+    - name: Install dependencies
+      run: yarn install --frozen-lockfile
+      
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Make gradlew executable
+      run: chmod +x android/gradlew
+      
+    - name: Generate Android project
+      run: |
+        export EXPO_TV=1
+        export EXPO_USE_METRO_WORKSPACE_ROOT=1
+        export NODE_ENV=production
+        npx expo prebuild --platform android --clean
+      
+    - name: Copy Android configuration
+      run: cp -r xml/* android/app/src/main/
+      
+    - name: Build Debug APK
+      run: |
+        cd android
+        export EXPO_TV=1
+        export NODE_ENV=production
+        ./gradlew assembleDebug --no-daemon --stacktrace
+        
+    - name: Build Release APK
+      run: |
+        cd android
+        export EXPO_TV=1
+        export NODE_ENV=production
+        ./gradlew assembleRelease --no-daemon --stacktrace
+        
+    - name: Upload Debug APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: orion-tv-debug-apk
+        path: android/app/build/outputs/apk/debug/app-debug.apk
+        retention-days: 30
+        
+    - name: Upload Release APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: orion-tv-release-apk
+        path: android/app/build/outputs/apk/release/app-release.apk
+        retention-days: 30
+        
+    - name: Create Release
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ github.run_number }}
+        release_name: Release v${{ github.run_number }}
+        draft: false
+        prerelease: false
+        
+    - name: Upload Release Asset
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: android/app/build/outputs/apk/release/app-release.apk
+        asset_name: OrionTV-v${{ github.run_number }}.apk
+        asset_content_type: application/vnd.android.package-archive

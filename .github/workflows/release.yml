@@ -1,0 +1,159 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.3.11)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release notes (optional)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  EXPO_TV: 1
+  EXPO_USE_METRO_WORKSPACE_ROOT: 1
+  NODE_ENV: production
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    steps:
+    - name: 📦 Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Update package.json version
+      run: |
+        npm version ${{ github.event.inputs.version }} --no-git-tag-version
+        
+    - name: 📝 Commit version update
+      run: |
+        git config user.name 'github-actions[bot]'
+        git config user.email 'github-actions[bot]@users.noreply.github.com'
+        git add package.json
+        git commit -m "chore: bump version to ${{ github.event.inputs.version }}"
+        git push
+        
+    - name: 🏷️ Create Git Tag
+      run: |
+        git tag v${{ github.event.inputs.version }}
+        git push origin v${{ github.event.inputs.version }}
+        
+    - name: 🏗️ Setup Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'yarn'
+        
+    - name: ☕ Setup Java JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+        
+    - name: 🤖 Setup Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        api-level: 34
+        build-tools: 34.0.0
+        
+    - name: 📱 Install dependencies
+      run: |
+        yarn install --frozen-lockfile --network-timeout 300000
+        
+    - name: 🔧 Setup Gradle cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          android/.gradle
+        key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle') }}
+        restore-keys: |
+          gradle-${{ runner.os }}-
+          
+    - name: 🔨 Generate Android project for TV
+      run: |
+        echo "🚀 Starting prebuild for Android TV..."
+        npx expo prebuild --platform android --clean --no-install
+        
+    - name: 📋 Copy TV configuration
+      run: |
+        echo "📄 Copying Android TV manifest..."
+        cp -v xml/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+        
+    - name: 🏗️ Build Release APK
+      run: |
+        cd android
+        echo "🔨 Building release APK for Android TV..."
+        chmod +x gradlew
+        ./gradlew assembleRelease --no-daemon --stacktrace
+        
+    - name: 📝 Prepare Release Assets
+      run: |
+        mkdir -p release-assets
+        cp android/app/build/outputs/apk/release/app-release.apk release-assets/OrionTV-v${{ github.event.inputs.version }}.apk
+        
+        # 创建校验文件
+        cd release-assets
+        sha256sum OrionTV-v${{ github.event.inputs.version }}.apk > OrionTV-v${{ github.event.inputs.version }}.apk.sha256
+        
+        echo "📦 Release assets prepared:"
+        ls -la
+        
+    - name: 🎉 Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ github.event.inputs.version }}
+        name: OrionTV v${{ github.event.inputs.version }}
+        body: |
+          ## 🚀 OrionTV v${{ github.event.inputs.version }}
+          
+          ${{ github.event.inputs.release_notes && format('### 📝 更新内容\n{0}\n\n', github.event.inputs.release_notes) || '' }}
+          
+          ### 📱 下载 Android TV APK
+          
+          **📥 下载链接：** [OrionTV-v${{ github.event.inputs.version }}.apk](https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/OrionTV-v${{ github.event.inputs.version }}.apk)
+          
+          ### 🛠️ 安装说明
+          1. 下载 APK 文件到您的 Android TV 设备
+          2. 在设置中允许安装未知来源的应用
+          3. 使用文件管理器安装 APK
+          
+          ### 🔒 安全验证
+          您可以使用以下 SHA256 校验和验证下载的文件完整性：
+          ```
+          $(cat release-assets/OrionTV-v${{ github.event.inputs.version }}.apk.sha256)
+          ```
+          
+          ### 📋 版本信息
+          - **构建时间：** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - **提交哈希：** ${{ github.sha }}
+          - **基于分支：** ${{ github.ref_name }}
+          
+          ### 🔧 技术栈
+          - React Native TVOS ~0.74.2-0
+          - Expo ~51.0.13
+          - TypeScript ~5.3.3
+          
+          ---
+          
+          🔥 基于 React Native TVOS 和 Expo 构建的跨平台电视播放器
+        files: |
+          release-assets/OrionTV-v${{ github.event.inputs.version }}.apk
+          release-assets/OrionTV-v${{ github.event.inputs.version }}.apk.sha256
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: 📊 Release Summary
+      run: |
+        echo "✅ Release v${{ github.event.inputs.version }} created successfully!"
+        echo "🔗 Release URL: https://github.com/${{ github.repository }}/releases/tag/v${{ github.event.inputs.version }}"
+        echo "📱 APK Size: $(du -h release-assets/OrionTV-v${{ github.event.inputs.version }}.apk | cut -f1)"

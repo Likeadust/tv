@@ -1,0 +1,183 @@
+name: Build OrionTV for Android TV
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    tags: [ 'v*' ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+  pull_request:
+    branches: [ main, master ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+      upload_to_release:
+        description: 'Upload to GitHub Release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  EXPO_TV: 1
+  EXPO_USE_METRO_WORKSPACE_ROOT: 1
+  NODE_ENV: production
+
+jobs:
+  build-tv-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    steps:
+    - name: 📦 Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: 🏗️ Setup Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'yarn'
+        
+    - name: ☕ Setup Java JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+        
+    - name: 🤖 Setup Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        api-level: 34
+        build-tools: 34.0.0
+        
+    - name: 📱 Install dependencies
+      run: |
+        yarn install --frozen-lockfile --network-timeout 300000
+        
+    - name: 📋 Get package version
+      id: package-version
+      run: |
+        VERSION=$(node -p "require('./package.json').version")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "📦 Package version: $VERSION"
+        
+    - name: 🔧 Setup Gradle cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          android/.gradle
+        key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/build.gradle', 'android/app/build.gradle') }}
+        restore-keys: |
+          gradle-${{ runner.os }}-
+          
+    - name: 🔨 Generate Android project for TV
+      run: |
+        echo "🚀 Starting prebuild for Android TV..."
+        npx expo prebuild --platform android --clean --no-install
+        
+    - name: 📋 Copy TV configuration
+      run: |
+        echo "📄 Copying Android TV manifest..."
+        cp -v xml/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+        
+    - name: 🔍 Verify Android project structure
+      run: |
+        echo "📁 Android project structure:"
+        ls -la android/
+        echo "📁 App source structure:"
+        ls -la android/app/src/main/
+        
+    - name: 🏗️ Build Debug APK
+      if: github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == ''
+      run: |
+        cd android
+        echo "🔨 Building debug APK for Android TV..."
+        chmod +x gradlew
+        ./gradlew assembleDebug --no-daemon --stacktrace --info
+        
+    - name: 🏗️ Build Release APK
+      if: github.event.inputs.build_type == 'release' || startsWith(github.ref, 'refs/tags/')
+      run: |
+        cd android
+        echo "🔨 Building release APK for Android TV..."
+        chmod +x gradlew
+        ./gradlew assembleRelease --no-daemon --stacktrace --info
+        
+    - name: 📤 Upload Debug APK
+      if: github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: OrionTV-Debug-v${{ steps.package-version.outputs.version }}-${{ github.sha }}
+        path: android/app/build/outputs/apk/debug/app-debug.apk
+        retention-days: 14
+        if-no-files-found: error
+        
+    - name: 📤 Upload Release APK
+      if: github.event.inputs.build_type == 'release' || startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-artifact@v4
+      with:
+        name: OrionTV-Release-v${{ steps.package-version.outputs.version }}-${{ github.sha }}
+        path: android/app/build/outputs/apk/release/app-release.apk
+        retention-days: 30
+        if-no-files-found: error
+        
+    - name: 📝 Rename Release APK
+      if: github.event.inputs.build_type == 'release' || startsWith(github.ref, 'refs/tags/') || github.event.inputs.upload_to_release == 'true'
+      run: |
+        mkdir -p release-artifacts
+        cp android/app/build/outputs/apk/release/app-release.apk release-artifacts/OrionTV-v${{ steps.package-version.outputs.version }}.apk
+        echo "📱 APK renamed to: OrionTV-v${{ steps.package-version.outputs.version }}.apk"
+        
+    - name: 📊 Build Summary
+      run: |
+        echo "✅ Build completed successfully!"
+        echo "📱 APK files generated:"
+        find android/app/build/outputs/apk -name "*.apk" -exec ls -lh {} \;
+        
+    - name: 🎉 Create GitHub Release
+      if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.upload_to_release == 'true'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release-artifacts/OrionTV-v${{ steps.package-version.outputs.version }}.apk
+        tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.package-version.outputs.version) }}
+        name: OrionTV v${{ steps.package-version.outputs.version }}
+        body: |
+          ## 🚀 OrionTV v${{ steps.package-version.outputs.version }}
+          
+          ### 📱 Android TV APK
+          
+          **下载链接：** [OrionTV-v${{ steps.package-version.outputs.version }}.apk](https://github.com/${{ github.repository }}/releases/download/v${{ steps.package-version.outputs.version }}/OrionTV-v${{ steps.package-version.outputs.version }}.apk)
+          
+          ### 🔧 安装说明
+          1. 下载 APK 文件到您的 Android TV 设备
+          2. 在设置中允许安装未知来源的应用
+          3. 使用文件管理器安装 APK
+          
+          ### 📋 版本信息
+          - **构建时间：** ${{ github.event.head_commit.timestamp }}
+          - **提交哈希：** ${{ github.sha }}
+          - **构建分支：** ${{ github.ref_name }}
+          
+          ---
+          
+          🔥 基于 React Native TVOS 和 Expo 构建的跨平台电视播放器
+        draft: false
+        prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
